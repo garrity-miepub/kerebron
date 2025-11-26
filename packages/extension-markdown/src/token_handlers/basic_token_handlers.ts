@@ -1,4 +1,4 @@
-import type Token from 'markdown-it/lib/token';
+import { Token } from '../types.ts';
 
 import type {
   ContextStash,
@@ -11,6 +11,7 @@ export function getHtmlBasicTokensHandlers(): Record<
   Array<TokenHandler>
 > {
   return {
+    'frontmatter': [],
     'heading_open': [
       (token: Token, ctx: ContextStash) => {
         ctx.current.log(`<${token.tag}>`, token);
@@ -41,6 +42,7 @@ export function getHtmlBasicTokensHandlers(): Record<
 
     'code_block': [
       (token: Token, ctx: ContextStash) => {
+        ctx.current.log('<pre>' + token.content + '</pre>\n', token);
         // ctx.current.log(
         //   token.content
         //     .split('\n')
@@ -69,7 +71,7 @@ function getHeaderTokensHandlers(): Record<string, Array<TokenHandler>> {
     .filter((entry) => ['heading_close'].includes(entry[0]));
 
   const entriesInline = Object.entries(getInlineTokensHandlers())
-    .filter((entry) => ['text'].includes(entry[0]));
+    .filter((entry) => ['text', 'link_open', 'link_close'].includes(entry[0]));
 
   return {
     ...Object.fromEntries(entriesInline),
@@ -80,17 +82,31 @@ function getHeaderTokensHandlers(): Record<string, Array<TokenHandler>> {
 
 export function getBasicTokensHandlers(): Record<string, Array<TokenHandler>> {
   return {
+    'frontmatter': [
+      (token: Token, ctx: ContextStash) => {
+        ctx.current.log(
+          '---' + '\n' + token.content + '\n---\n\n',
+          token,
+        );
+      },
+    ],
     'heading_open': [
       (token: Token, ctx: ContextStash) => {
-        ctx.stash();
+        ctx.stash('getBasicTokensHandlers.heading_open');
         ctx.current.handlers = getHeaderTokensHandlers();
-        ctx.current.log('#'.repeat(+token.tag.slice(1)) + ' ', token);
+        if (token.markup === '---') {
+          return;
+        }
+        ctx.current.log('#'.repeat(+token.tag.substring(1)) + ' ', token);
       },
     ],
     'heading_close': [
       (token: Token, ctx: ContextStash) => {
+        if (token.markup === '---') {
+          ctx.current.log('\n' + token.markup + '\n', token);
+        }
         ctx.current.log('\n', token);
-        ctx.unstash();
+        ctx.unstash('getBasicTokensHandlers.heading_close');
       },
     ],
     'paragraph_open': [
@@ -109,20 +125,52 @@ export function getBasicTokensHandlers(): Record<string, Array<TokenHandler>> {
 
     'fence': [
       (token: Token, ctx: ContextStash) => {
-        ctx.current.log(
-          '```' + token.info + '\n' + token.content + '```\n\n',
-          token,
-        );
+        const content = token.content.endsWith('\n')
+          ? token.content
+          : token.content + '\n';
+        if (token.info === 'latex') {
+          ctx.current.log(
+            '$$' + '\n' + content + '$$\n\n',
+            token,
+          );
+        } else {
+          const lang = token.attrGet('lang') || '';
+          ctx.current.log(
+            '```' + lang + '\n' + content + '```\n\n',
+            token,
+          );
+        }
       },
     ],
 
     'code_block': [
       (token: Token, ctx: ContextStash) => {
+        const indent = +(token.attrGet('indent') || 0);
+        const lang = token.attrGet('lang') || '';
+
+        if (indent === 0) {
+          const content = token.content.endsWith('\n')
+            ? token.content
+            : token.content + '\n';
+          if (lang === 'latex') {
+            ctx.current.log(
+              '$$' + '\n' + content + '$$\n\n',
+              token,
+            );
+          } else {
+            ctx.current.log(
+              '```' + lang + '\n' + content + '```\n\n',
+              token,
+            );
+          }
+          return;
+        }
+
         ctx.current.log(
           token.content
             .split('\n')
-            .map((t) => t ? ('    ' + t) : '')
-            .join('\n') + '\n',
+            .map((t) => t ? (' '.repeat(indent) + t) : '')
+            .join('\n'),
           token,
         );
       },

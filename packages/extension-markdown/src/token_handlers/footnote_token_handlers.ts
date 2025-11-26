@@ -1,4 +1,4 @@
-import type Token from 'markdown-it/lib/token';
+import type { Token } from '../types.ts';
 
 import type {
   ContextStash,
@@ -22,18 +22,18 @@ export function getFootnoteTokensHandlers(): Record<
     'footnote_open': [
       (token: Token, ctx: ContextStash) => {
         if (token.meta.label) {
-          ctx.current.log(`[^${token.meta.label}]: `);
+          ctx.current.log(`[^${token.meta.label}]: `, token);
         } else {
-          ctx.current.log(`[^footnote_${token.meta.id}]: `);
+          ctx.current.log(`[^footnote_${token.meta.id}]: `, token);
         }
-        ctx.stash();
+        ctx.stash('getFootnoteTokensHandlers.footnote_open');
         ctx.current.footnoteCnt++;
         ctx.current.itemRow = 0;
       },
     ],
     'footnote_close': [
       (token: Token, ctx: ContextStash) => {
-        ctx.unstash();
+        ctx.unstash('getFootnoteTokensHandlers.footnote_close');
       },
     ],
     'footnote_anchor': [

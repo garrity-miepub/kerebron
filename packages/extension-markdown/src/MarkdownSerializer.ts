@@ -1,7 +1,5 @@
-import MarkdownIt from 'markdown-it';
-import markdownDefList from 'npm:markdown-it-deflist@3.0.0';
-import markdownFootnote from 'npm:markdown-it-footnote@4.0.0';
-import type Token from 'markdown-it/lib/token';
+import { NESTING_CLOSING, type Token } from './types.ts';
+
 import { getTableTokensHandlers } from './token_handlers/table_token_handlers.ts';
 import { getBasicTokensHandlers } from './token_handlers/basic_token_handlers.ts';
 import { getInlineTokensHandlers } from './token_handlers/inline_token_handlers.ts';
@@ -14,18 +12,53 @@ export function writeIndented(
   output: SmartOutput<Token>,
   text: string,
   currentCtx: SerializerContext,
+  token?: Token,
 ) {
   const lines = text.split('\n');
 
+  const typeIndent: Record<ListType, number> = {
+    ul: 2,
+    ol: 4,
+    dl: 2,
+    tl: 4,
+  };
+
+  let offset = 0;
+  const startPos = token
+    ? (token.map && token.map.length > 0 ? token.map[0] : 0)
+    : 0;
   for (let lineNo = 0; lineNo < lines.length; lineNo++) {
     const line = lines[lineNo];
 
+    if (lineNo === lines.length - 1 && line.length === 0) {
+      continue;
+    }
+
+    if (output.colPos === 0) {
+      output.log('> '.repeat(currentCtx.blockquoteCnt).trim());
+    }
     if (output.colPos === 0 && line.length > 0) {
-      output.log('> '.repeat(currentCtx.blockquoteCnt));
       output.log('    '.repeat(currentCtx.footnoteCnt));
 
+      const indent = currentCtx.listPath
+        .slice(0, currentCtx.listPath.length - 1)
+        .map((type) => typeIndent[type])
+        .reduce((p, c) => p + c, 0);
+      if (currentCtx.listType === 'tl') {
+        output.log(' '.repeat(indent));
+        if (currentCtx.itemRow === 0) {
+          output.log('- ');
+          if (currentCtx.itemSymbol) {
+            output.log('[x] ');
+          } else {
+            output.log('[ ] ');
+          }
+        } else {
+          output.log('  ');
+        }
+      }
       if (currentCtx.listType === 'ul') {
-        output.log('  '.repeat(currentCtx.listLevel - 1));
+        output.log(' '.repeat(indent));
         if (currentCtx.itemRow === 0) {
           output.log(currentCtx.itemSymbol + ' ');
         } else {
@@ -34,11 +67,11 @@ export function writeIndented(
       }
       if (currentCtx.listType === 'ol') {
         const no = currentCtx.itemSymbol;
-        output.log('    '.repeat(currentCtx.listLevel - 1));
+        output.log(' '.repeat(indent));
         if (currentCtx.itemRow === 0) {
           output.log(no);
         } else {
-          output.log('    ');
+          output.log(' '.repeat(4));
         }
       }
       if (currentCtx.listType === 'dl') {
@@ -52,26 +85,50 @@ export function writeIndented(
       }
     }
 
-    output.log(line);
+    const tok = structuredClone(token);
+    if (startPos && tok) {
+      tok.map = [startPos + offset];
+    }
+
+    if (line.length > 0) {
+      if (
+        currentCtx.blockquoteCnt > 0 &&
+        output.colPos === currentCtx.blockquoteCnt * 2 - 1
+      ) {
+        output.log(' ');
+      }
+    }
+
+    output.log(line, tok);
+    offset += line.length;
     if (lineNo < lines.length - 1) {
       currentCtx.itemRow++;
-      output.log('\n');
+      const tok = structuredClone(token);
+      if (startPos && tok) {
+        tok.map = [startPos + offset];
+      }
+      output.log('\n', tok);
+      offset++;
     }
   }
 }
 
+type ListType = 'ul' | 'ol' | 'dl' | 'tl';
+
 export interface SerializerContext {
   meta: Record<string, any>;
+  metaObj: Record<string, any>;
   blockquoteCnt: number;
   footnoteCnt: number;
-  listLevel: number;
-  listType?: 'ul' | 'ol' | 'dl';
+  listPath: Array<ListType>;
+  listType?: ListType;
   itemRow: number;
   itemNumber: number;
   itemSymbol: string;
 
   handlers: Record<string, Array<TokenHandler>>;
-  log: (txt: string, token: Token) => void;
+  log: (txt: string, token?: Token) => void;
+  debug: (...args: any[]) => void;
 }
 
 export class ContextStash {
@@ -83,31 +140,40 @@ export class ContextStash {
     this.output = new SmartOutput();
     this.currentCtx = {
       meta: {},
+      metaObj: {},
       blockquoteCnt: 0,
       footnoteCnt: 0,
       itemRow: 0,
-      listLevel: 0,
+      listPath: [],
       itemNumber: 0,
       itemSymbol: '',
 
       handlers,
-      log: (txt: string, token: Token) => this.output.log(txt, token),
+      log: (txt: string, token?: Token) => this.output.log(txt, token),
+      debug: () => {},
     };
-    this.stash();
+    this.stash('ContextStash.constructor()');
   }
 
-  public stash(): number {
+  public stash(reason: string): number {
+    this.currentCtx.debug(
+      '  '.repeat(this.ctxStash.length) + 'stash: ' + reason,
+    );
     this.ctxStash.push(this.currentCtx);
     const funcs = {
       log: this.currentCtx.log,
+      debug: this.currentCtx.debug,
     };
     const handlers = { ...this.currentCtx.handlers };
+    const metaObj = { ...this.currentCtx.metaObj };
     this.currentCtx = {
       ...structuredClone({
         ...this.currentCtx,
         log: undefined,
+        debug: undefined,
         handlers: undefined,
       }),
+      metaObj,
       ...funcs,
       handlers: handlers,
     };
@@ -116,20 +182,24 @@ export class ContextStash {
     return rollbackPos;
   }
 
-  public unstash() {
+  public unstash(reason: string) {
     const ctx = this.ctxStash.pop();
+    this.currentCtx.debug(
+      '  '.repeat(this.ctxStash.length) + 'unstash: ' + reason,
+    );
     if (!ctx) {
       throw new Error('Unstash failed');
     }
     this.currentCtx = ctx;
   }
 
-  public rollback(rollbackPos: number) {
+  public rollback(rollbackPos: number, reason: string) {
     const rollbackCtx = this.ctxStash[rollbackPos];
     if (!rollbackCtx) {
       throw new RangeError('Invalid rollbackPos: ' + rollbackPos);
     }
 
+    this.currentCtx.debug('rollback ' + reason, rollbackPos);
     this.ctxStash.splice(rollbackPos);
     this.currentCtx = this.ctxStash[this.ctxStash.length - 1];
   }
@@ -154,7 +224,8 @@ export function serializeInlineTokens(
         ctx.current.handlers[token.type] || ctx.current.handlers['default'];
       if (!tokenHandlers) {
         throw new Error(
-          `Unknown inline token: ${token.type} ` + JSON.stringify(token),
+          `Unknown inline token: ${token.type} ` + JSON.stringify(token) +
+            `, available hadlers: ${Object.keys(ctx.current.handlers)}`,
         );
       }
 
@@ -181,23 +252,14 @@ export type TokenHandler = (
   tokenSource: TokenSource<Token>,
 ) => boolean | void;
 
-export class MarkdownSerializer {
-  public readonly md: MarkdownIt;
+export interface MarkdownSerializerConfig {
+  debug?: (...args: any[]) => void;
+}
 
+export class MarkdownSerializer {
   private ctx: ContextStash;
 
-  constructor() {
-    this.md = new MarkdownIt({
-      html: true,
-      linkify: true,
-      typographer: true,
-      breaks: true,
-      // highlight: true,
-      quotes: '""\'\'',
-    });
-    this.md.use(markdownDefList);
-    this.md.use(markdownFootnote);
-
+  constructor(config: MarkdownSerializerConfig = {}) {
     this.ctx = new ContextStash({
       ...getInlineTokensHandlers(),
       ...getTableTokensHandlers(),
@@ -205,26 +267,30 @@ export class MarkdownSerializer {
       ...getFootnoteTokensHandlers(),
       ...getListsTokensHandlers(),
     });
+
+    if (config.debug) {
+      this.ctx.current.debug = config.debug;
+    }
   }
 
   private get endsWithEmptyLine() {
     return this.ctx.output.endsWith('\n\n');
   }
 
-  async serialize(tokens: Token[]): Promise<SmartOutput<Token>> {
+  serialize(tokens: Token[]): SmartOutput<Token> {
     const prevLevelTokenType: Record<number, string> = {};
 
     const tokenSource = new TokenSource(tokens);
     tokenSource.iterate(0, (token, i) => {
       if (!this.ctx.current.meta['html_mode']) {
-        if (token.level === 0 && token.nesting !== -1) {
+        if (token.level === 0 && token.nesting !== NESTING_CLOSING) {
           if (this.ctx.output.colPos !== 0) {
             this.ctx.current.log('\n');
           }
         }
 
         if (!this.endsWithEmptyLine) {
-          if (token.nesting !== -1 && token.level === 0) {
+          if (token.nesting !== NESTING_CLOSING && token.level === 0) {
             const prevTopTokenType = prevLevelTokenType[token.level] || '';
             if (
               [
@@ -232,6 +298,7 @@ export class MarkdownSerializer {
                 'paragraph_close',
                 'ordered_list_close',
                 'bullet_list_close',
+                'task_list_close',
                 'dl_close',
                 'table_close',
                 'blockquote_close',
@@ -249,7 +316,7 @@ export class MarkdownSerializer {
               this.ctx.current.log('\n');
             }
           } else if (
-            token.nesting !== -1 && token.level === 1 &&
+            token.nesting !== NESTING_CLOSING && token.level === 1 &&
             'dt_open' === token.type
           ) {
             const prevTokenType = prevLevelTokenType[token.level] || '';
@@ -265,26 +332,45 @@ export class MarkdownSerializer {
         }
       }
 
+      if (token.nesting !== NESTING_CLOSING && token.level > 0) {
+        const prevTopTokenType = prevLevelTokenType[token.level] || '';
+        if (
+          [
+            'paragraph_close',
+          ].includes(prevTopTokenType)
+        ) {
+          if (this.ctx.current.blockquoteCnt === token.level) {
+            writeIndented(this.ctx.output, '\n', this.ctx.current, token);
+          }
+        }
+      }
+
       const tokenHandlers: Array<TokenHandler> =
         this.ctx.current.handlers[token.type] ||
         this.ctx.current.handlers['default'];
       if (token.type === 'inline') {
         if (token.children) {
-          this.ctx.stash();
-          this.ctx.current.log = (txt: string, token: Token) => {
-            writeIndented(this.ctx.output, txt, this.ctx.current);
+          this.ctx.stash('serializeInlineTokens()');
+          this.ctx.current.log = (txt: string, token?: Token) => {
+            writeIndented(this.ctx.output, txt, this.ctx.current, token);
           };
 
           try {
             serializeInlineTokens(this.ctx, tokenSource, token.children);
-            this.ctx.unstash();
+            this.ctx.unstash('serializeInlineTokens()');
           } catch (err: any) {
+            this.ctx.current.debug(err.message);
             if (err.message === 'Rewinded before inline tokens') {
               return;
             }
+            throw err;
           }
         }
       } else if (!tokenHandlers) {
+        this.ctx.current.debug(
+          'current.handlers',
+          Object.keys(this.ctx.current.handlers).sort(),
+        );
         throw new Error(
           `Unknown token: ${token.type} ` + JSON.stringify(token),
         );
@@ -297,7 +383,7 @@ export class MarkdownSerializer {
       }
 
       prevLevelTokenType[token.level] = token.type;
-      if (token.nesting === -1) {
+      if (token.nesting === NESTING_CLOSING) {
         prevLevelTokenType[token.level + 1] = '';
       }
     });

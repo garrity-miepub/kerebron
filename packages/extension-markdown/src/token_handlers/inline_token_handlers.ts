@@ -1,11 +1,11 @@
-import type Token from 'markdown-it/lib/token';
+import type { Token } from '../types.ts';
 
 import type {
   ContextStash,
   TokenHandler,
 } from '@kerebron/extension-markdown/MarkdownSerializer';
 
-export function escapeMarkdown(text: string): string {
+export function escapeMarkdown(token: Token): Array<[string, Token]> {
   const markdownChars = [
     { char: '\\', escape: '\\\\' },
     // { char: '*', escape: '\\*' },
@@ -31,12 +31,56 @@ export function escapeMarkdown(text: string): string {
     { char: '—', escape: '---' },
   ];
 
-  let escapedText = text;
-  for (const { char, escape } of markdownChars) {
-    escapedText = escapedText.replaceAll(char, escape);
+  const startPos = token.map && token.map.length > 0 ? token.map[0] : 0;
+  if (!startPos) {
+    let escapedText = token.content;
+    for (const { char, escape } of markdownChars) {
+      escapedText = escapedText.replaceAll(char, escape);
+    }
+
+    return [[escapedText, token]];
   }
 
-  return escapedText;
+  const charArr = token.content.split('');
+  const retVal: Array<[string, Token]> = [];
+
+  const markdownCharsMap: Record<string, string> = Object.fromEntries(
+    markdownChars.map((c) => [c.char, c.escape]),
+  );
+
+  let offset = 0;
+  let inStr = '';
+  let currentOutStr = '';
+
+  const flush = () => {
+    if (currentOutStr.length > 0) {
+      const tok = structuredClone(token);
+      tok.map = [startPos + offset];
+      retVal.push([
+        currentOutStr,
+        tok,
+      ]);
+      offset = inStr.length;
+    }
+    currentOutStr = '';
+  };
+
+  for (let idx = 0; idx < charArr.length; idx++) {
+    const char = charArr[idx];
+
+    inStr += char;
+    if (markdownCharsMap[char]) {
+      flush();
+    }
+    currentOutStr += markdownCharsMap[char] || char;
+    if (markdownCharsMap[char]) {
+      flush();
+    }
+  }
+
+  flush();
+
+  return retVal;
 }
 
 function getLinkTokensHandlers(): Record<string, Array<TokenHandler>> {
@@ -44,36 +88,50 @@ function getLinkTokensHandlers(): Record<string, Array<TokenHandler>> {
     'text': [
       (token: Token, ctx: ContextStash) => {
         ctx.current.meta['link_text'] += token.content;
+        if (token.content && !ctx.current.meta['link_token_token']) {
+          ctx.current.meta['link_token_token'] = token;
+        }
       },
     ],
 
     'link_close': [
       (token: Token, ctx: ContextStash) => {
         {
-          const lastStackToken = ctx.current.meta['link_open_token'];
-          const hrefTuple = lastStackToken.attrs?.find((attr) =>
-            attr[0] === 'href'
-          );
-          const titleTuple = lastStackToken.attrs?.find((attr) =>
-            attr[0] === 'title'
-          );
+          const lastStackToken: Token = ctx.current.meta['link_open_token'];
+          const href: string = lastStackToken.attrGet('href') || '';
+          const title: string = lastStackToken.attrGet('title') || '';
 
-          const href = hrefTuple ? hrefTuple[1] : '';
-          const title = titleTuple ? ' "' + titleTuple[1] + '"' : '';
-
-          if (ctx.current.meta['link_text'] === href && !title) {
+          if (!title && ctx.current.meta['link_text'] === href) {
             ctx.current.log(href, token);
+          } else if (!title && !href) {
+            ctx.current.log('[', token);
+            ctx.current.log(
+              ctx.current.meta['link_text'],
+              ctx.current.meta['link_token_token'],
+            );
+            ctx.current.log(`]${title}`, token);
           } else {
             ctx.current.log('[', token);
             ctx.current.log(
-              escapeMarkdown(ctx.current.meta['link_text']),
-              token,
+              ctx.current.meta['link_text'],
+              ctx.current.meta['link_token_token'],
             );
-            ctx.current.log(`](${href}${title})`, token);
+            if (title) {
+              ctx.current.log(`](${href} ${title})`, token);
+            } else {
+              ctx.current.log(`](${href})`, token);
+            }
           }
 
-          ctx.unstash();
+          ctx.unstash('getLinkTokensHandlers.link_close');
         }
+      },
+    ],
+
+    default: [
+      (token: Token, ctx: ContextStash) => {
+        // Ignore other stuff
+        // TODO: images?
       },
     ],
   };
@@ -83,7 +141,15 @@ export function getInlineTokensHandlers(): Record<string, Array<TokenHandler>> {
   return {
     'text': [
       (token: Token, ctx: ContextStash) => {
-        ctx.current.log(escapeMarkdown(token.content), token);
+        if (token.meta === 'noEscText') {
+          for (const pair of escapeMarkdown(token)) {
+            ctx.current.log(token.content);
+          }
+        } else {
+          for (const pair of escapeMarkdown(token)) {
+            ctx.current.log(pair[0], pair[1]);
+          }
+        }
       },
     ],
     'strong_open': [
@@ -106,25 +172,47 @@ export function getInlineTokensHandlers(): Record<string, Array<TokenHandler>> {
         ctx.current.log(token.markup || '*', token);
       },
     ],
-    's_open': [
+    'underline_open': [
       (token: Token, ctx: ContextStash) => {
-        ctx.current.log(token.markup || '~~', token);
+        ctx.current.log(token.markup || '_', token);
       },
     ],
-    's_close': [
+    'underline_close': [
       (token: Token, ctx: ContextStash) => {
-        ctx.current.log(token.markup || '~~', token);
+        ctx.current.log(token.markup || '_', token);
+      },
+    ],
+    'strike_open': [
+      (token: Token, ctx: ContextStash) => {
+        ctx.current.log(token.markup || '~', token);
+      },
+    ],
+    'strike_close': [
+      (token: Token, ctx: ContextStash) => {
+        ctx.current.log(token.markup || '~', token);
       },
     ],
 
     'link_open': [
       (token: Token, ctx: ContextStash) => {
-        ctx.stash();
+        ctx.stash('getInlineTokensHandlers.link_open');
 
         ctx.current.handlers = getLinkTokensHandlers();
 
         ctx.current.meta['link_open_token'] = token;
         ctx.current.meta['link_text'] = '';
+        ctx.current.meta['link_token_token'] = null;
+      },
+    ],
+
+    'code_open': [
+      (token: Token, ctx: ContextStash) => {
+        ctx.current.log('`', token);
+      },
+    ],
+    'code_close': [
+      (token: Token, ctx: ContextStash) => {
+        ctx.current.log('`', token);
       },
     ],
 
@@ -133,7 +221,18 @@ export function getInlineTokensHandlers(): Record<string, Array<TokenHandler>> {
         ctx.current.log('`' + token.content + '`', token);
       },
     ],
+
+    'math': [
+      (token: Token, ctx: ContextStash) => {
+        ctx.current.log('$' + token.content + '$', token);
+      },
+    ],
     'hardbreak': [
+      (token: Token, ctx: ContextStash) => {
+        ctx.current.log('\n', token);
+      },
+    ],
+    'softbreak': [
       (token: Token, ctx: ContextStash) => {
         ctx.current.log('\n', token);
       },
@@ -142,9 +241,10 @@ export function getInlineTokensHandlers(): Record<string, Array<TokenHandler>> {
     'image': [
       (token: Token, ctx: ContextStash) => {
         {
-          const srcTuple = token.attrs?.find((attr) => attr[0] === 'src');
-          // const altTuple = token.attrs?.find(attr => attr[0] === 'alt');
-          let alt = '';
+          const src = token.attrGet('src');
+          const altAttr = token.attrGet('alt');
+
+          let alt = altAttr || '';
           if (token.children) {
             for (const child of token.children) {
               if (child.type === 'text') {
@@ -152,16 +252,27 @@ export function getInlineTokensHandlers(): Record<string, Array<TokenHandler>> {
               }
             }
           }
-          const titleTuple = token.attrs?.find((attr) => attr[0] === 'title');
 
           ctx.current.log(`![${alt}]`, token);
-          if (srcTuple) {
+          // ctx.current.log(
+          //   `(${src})`,
+          //   token,
+          // );
+
+          const title = token.attrGet('title');
+          if (src) {
             ctx.current.log(
-              `(${srcTuple[1]}${titleTuple ? ' "' + titleTuple[1] + '"' : ''})`,
+              `(${src}${title ? ' ' + title : ''})`,
               token,
             );
           }
         }
+      },
+    ],
+
+    'html_block': [
+      (token: Token, ctx: ContextStash) => {
+        ctx.current.log(token.content, token);
       },
     ],
 
@@ -215,13 +326,13 @@ export function getHtmlInlineTokensHandlers(): Record<
         ctx.current.log(`</${tag}>`, token);
       },
     ],
-    's_open': [
+    'strike_open': [
       (token: Token, ctx: ContextStash) => {
         const tag = token.tag || 'strike';
         ctx.current.log(`<${tag}>`, token);
       },
     ],
-    's_close': [
+    'strike_close': [
       (token: Token, ctx: ContextStash) => {
         const tag = token.tag || 'strike';
         ctx.current.log(`</${tag}>`, token);
@@ -230,13 +341,12 @@ export function getHtmlInlineTokensHandlers(): Record<
 
     'link_open': [
       (token: Token, ctx: ContextStash) => {
-        ctx.stash();
+        ctx.stash('getHtmlInlineTokensHandlers.link_open');
 
-        const hrefTuple = token.attrs?.find((attr) => attr[0] === 'href');
-        const titleTuple = token.attrs?.find((attr) => attr[0] === 'title');
+        const href = token.attrGet('href') || '';
+        const titleValue = token.attrGet('title');
 
-        const href = hrefTuple ? hrefTuple[1] : '';
-        const title = titleTuple ? ' "' + titleTuple[1] + '"' : '';
+        const title = titleValue ? ' "' + titleValue + '"' : '';
 
         ctx.current.log(`<a href="${href}">`, token);
       },
@@ -246,20 +356,39 @@ export function getHtmlInlineTokensHandlers(): Record<
       (token: Token, ctx: ContextStash) => {
         {
           ctx.current.log('</a>', token);
-          ctx.unstash();
+          ctx.unstash('getHtmlInlineTokensHandlers.link_close');
         }
       },
     ],
 
-    'code_inline': [
+    'code_open': [
       (token: Token, ctx: ContextStash) => {
         const tag = token.tag || 'code';
         ctx.current.log(`<${tag}>`, token);
-        ctx.current.log(token.content || '', token);
-        ctx.current.log(`</${tag}>`, token);
       },
     ],
+    'code_close': [
+      (token: Token, ctx: ContextStash) => {
+        const tag = token.tag || 'code';
+        ctx.current.log(`<${tag}>`, token);
+      },
+    ],
+
+    // 'code_inline': [
+    //   (token: Token, ctx: ContextStash) => {
+    //     const tag = token.tag || 'code';
+    //     ctx.current.log(`<${tag}>`, token);
+    //     ctx.current.log(token.content || '', token);
+    //     ctx.current.log(`</${tag}>`, token);
+    //   },
+    // ],
     'hardbreak': [
+      (token: Token, ctx: ContextStash) => {
+        const tag = token.tag || 'br';
+        ctx.current.log(`<${tag} />`, token);
+      },
+    ],
+    'softbreak': [
       (token: Token, ctx: ContextStash) => {
         const tag = token.tag || 'br';
         ctx.current.log(`<${tag} />`, token);
@@ -269,8 +398,8 @@ export function getHtmlInlineTokensHandlers(): Record<
     'image': [
       (token: Token, ctx: ContextStash) => {
         {
-          const srcTuple = token.attrs?.find((attr) => attr[0] === 'src');
-          // const altTuple = token.attrs?.find(attr => attr[0] === 'alt');
+          // const src = token.attrGet('src');
+          // const alt = token.attrGet('alt');
           let alt = '';
           if (token.children) {
             for (const child of token.children) {
@@ -279,12 +408,12 @@ export function getHtmlInlineTokensHandlers(): Record<
               }
             }
           }
-          const titleTuple = token.attrs?.find((attr) => attr[0] === 'title');
+          // const title = token.attrGet('title');
 
           // ctx.current.log(`![${alt}]`, token);
-          // if (srcTuple) {
+          // if (src) {
           //   ctx.current.log(
-          //     `(${srcTuple[1]}${titleTuple ? ' "' + titleTuple[1] + '"' : ''})`, token
+          //     `(${src}${title ? ' "' + title + '"' : ''})`, token
           //   );
           // }
 
@@ -293,6 +422,11 @@ export function getHtmlInlineTokensHandlers(): Record<
           const tag = token.tag || 'img';
           ctx.current.log(`<${tag} />`, token);
         }
+      },
+    ],
+    'html_block': [
+      (token: Token, ctx: ContextStash) => {
+        ctx.current.log(token.content, token);
       },
     ],
 

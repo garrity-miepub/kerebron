@@ -13,7 +13,6 @@ import {
 import {
   type CommandFactories,
   type CommandShortcuts,
-  wrapInList,
 } from '@kerebron/editor/commands';
 
 export class NodeOrderedList extends Node {
@@ -68,13 +67,13 @@ export class NodeOrderedList extends Node {
     type: NodeType,
   ): Partial<CommandFactories> {
     return {
-      'toggleOrderedList': () => wrapInList(type),
+      'toggleOrderedList': () => editor.commandFactories.wrapInList(type),
     };
   }
 
   override getKeyboardShortcuts(): Partial<CommandShortcuts> {
     return {
-      'Shift-Ctrl-9': 'toggleOrderedList',
+      'Shift-Ctrl-7': 'toggleOrderedList',
     };
   }
 }

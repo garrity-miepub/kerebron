@@ -204,22 +204,3 @@ export class MenuPlugin extends Plugin {
     });
   }
 }
-
-/*
-/// A plugin that will place a menu bar above the editor. Note that
-/// this involves wrapping the editor in an additional `<div>`.
-export function menuBar(options: {
-    /// Provides the content of the menu, as a nested array to be
-    /// passed to `renderGrouped`.
-    content: readonly (readonly MenuElement[])[]
-
-    /// Determines whether the menu floats, i.e. whether it sticks to
-    /// the top of the viewport when the editor is partially scrolled
-    /// out of view.
-    floating?: boolean
-}): Plugin {
-    return new Plugin({
-        view(editorView) { return new MenuBarView(editorView, options) }
-    })
-}
-*/

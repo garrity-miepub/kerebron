@@ -20,17 +20,11 @@ import { ExtensionMarkdown } from '@kerebron/extension-markdown';
 import { ExtensionOdt } from '@kerebron/extension-odt';
 import { ExtensionTables } from '@kerebron/extension-tables';
 import { ExtensionDevToolkit } from '@kerebron/extension-dev-toolkit';
-
-import {
-  Dropdown,
-  ExtensionMenu,
-  type MenuElement,
-  MenuItem,
-} from '@kerebron/extension-menu';
+import { ExtensionCustomMenu } from '@kerebron/extension-menu/ExtensionCustomMenu';
 
 import { ExtensionYjs } from '@kerebron/extension-yjs';
 import { userColors } from '@kerebron/extension-yjs/userColors';
-import { NodeCodeMirror } from '@kerebron/extension-codemirror';
+import { ExtensionCodeMirror } from '@kerebron/extension-codemirror';
 
 import * as Y from 'yjs';
 import * as random from 'lib0/random';
@@ -92,36 +86,15 @@ export default {
         element: this.$refs.editor,
         extensions: [
           new ExtensionBasicEditor(),
-          new ExtensionMenu({
-            modifyMenu: (menus: MenuElement[][]) => {
-              const fileMenu = [
-                new MenuItem({
-                  label: 'Simulate loadDoc',
-                  enable: () => true,
-                  run: () => this.loadDoc(),
-                }),
-                new MenuItem({
-                  label: 'Load',
-                  enable: () => true,
-                  run: () => this.loadDoc2(),
-                }),
-              ];
-              menus[0].unshift(new Dropdown(fileMenu, { label: 'File' }));
-              return menus;
-            },
-          }),
+          new ExtensionCustomMenu(),
           new ExtensionMarkdown(),
           new ExtensionOdt(),
           new ExtensionTables(),
           new ExtensionYjs({ ydoc, provider: wsProvider }),
           new ExtensionDevToolkit(),
-          new NodeCodeMirror({
+          new ExtensionCodeMirror({
             theme: [dracula],
-            ydoc,
-            provider: wsProvider,
-            shadowRoot: this.$.shadowRoot,
           }),
-          // new NodeCodeMirror({ theme: [dracula] }),
         ],
         // content: pmDoc
       });
@@ -165,6 +138,6 @@ export default {
 <style>
 @import '@kerebron/editor/assets/index.css';
 @import '@kerebron/extension-tables/assets/tables.css';
-@import '@kerebron/extension-menu/assets/menu.css';
+@import '@kerebron/extension-menu/assets/custom-menu.css';
 @import '@kerebron/extension-codemirror/assets/codemirror.css';
 </style>

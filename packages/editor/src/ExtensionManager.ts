@@ -12,15 +12,11 @@ import {
   InputRulesPlugin,
 } from './plugins/input-rules/InputRulesPlugin.ts';
 import { KeymapPlugin } from './plugins/keymap/keymap.ts';
-import {
-  chainCommands,
-  CommandFactories,
-  CommandFactory,
-  CommandShortcuts,
-} from './commands/mod.ts';
+import { CommandShortcuts, firstCommand } from './commands/mod.ts';
 import { type Command } from 'prosemirror-state';
 import { addAttributesToSchema } from './utilities/getHtmlAttributes.ts';
-import { base } from './plugins/keymap/w3c-keyname.ts';
+import { type CommandManager } from './commands/CommandManager.ts';
+import { TrackSelecionPlugin } from './plugins/TrackSelecionPlugin.ts';
 
 export function findDuplicates(items: any[]): any[] {
   const filtered = items.filter((el, index) => items.indexOf(el) !== index);
@@ -50,15 +46,18 @@ export class ExtensionManager {
   public readonly schema: Schema;
 
   private extensions: Set<AnyExtension> = new Set();
-  readonly plugins: Plugin[];
+  readonly plugins: Plugin[] = [];
   readonly nodeViews: Record<string, NodeViewConstructor> = {};
 
-  readonly commandFactories: { [key: string]: CommandFactory } = {};
   public converters: Record<string, Converter> = {};
 
   private debug = true;
 
-  constructor(extensions: AnyExtensionOrReq[], private editor: CoreEditor) {
+  constructor(
+    extensions: AnyExtensionOrReq[],
+    private editor: CoreEditor,
+    private commandManager: CommandManager,
+  ) {
     this.setupExtensions(new Set(extensions));
     this.schema = this.getSchemaByResolvedExtensions(editor);
 
@@ -69,7 +68,6 @@ export class ExtensionManager {
       },
     });
     editor.dispatchEvent(event);
-    this.plugins = this.getPlugins();
   }
 
   getExtension<T extends Extension>(name: string): T | undefined {
@@ -84,56 +82,21 @@ export class ExtensionManager {
     }
   }
 
-  private getPlugins() {
-    const plugins: Plugin[] = [];
-
+  private initPlugins() {
     const inputRules: InputRule[] = [];
-    const commands: Map<string, CommandFactory> = new Map();
     const keyBindings: Map<string, Command> = new Map();
 
-    const mergeCommands = (
-      toInsert: Partial<CommandFactories>,
-      extName: string,
-    ) => {
-      for (const key in toInsert) {
-        const commandFactory = toInsert[key];
-        if (!commandFactory) {
-          continue;
-        }
-
-        if (this.debug) {
-          const wrappedFactory = (...args: unknown[]) => {
-            const realCommand = commandFactory(...args);
-
-            const command: Command = (state, dispatch, view) => {
-              if (dispatch) {
-                console.debug(`Command: ${extName}.${key}`);
-              }
-              return realCommand(state, dispatch, view);
-            };
-
-            return command;
-          };
-
-          commands.set(key, wrappedFactory);
-          this.commandFactories[key] = wrappedFactory;
-        } else {
-          commands.set(key, commandFactory);
-          this.commandFactories[key] = commandFactory;
-        }
-      }
-    };
-
-    function mergeShortcuts(
+    const mergeShortcuts = (
       toInsert: Partial<CommandShortcuts>,
       extName: string,
-    ) {
+    ) => {
       for (const key in toInsert) {
         if (!toInsert[key]) {
           continue;
         }
 
-        const commandFactory = commands.get(toInsert[key]);
+        const commandFactory =
+          this.commandManager.commandFactories[toInsert[key]];
         if (!commandFactory) {
           console.warn(`No command constructor: ${toInsert[key]}`);
           continue;
@@ -142,23 +105,25 @@ export class ExtensionManager {
 
         const keyBinding = keyBindings.get(key);
         if (keyBinding) {
-          keyBindings.set(key, chainCommands(keyBinding, command));
+          keyBindings.set(key, firstCommand(command, keyBinding));
         } else {
           keyBindings.set(key, command);
         }
       }
-    }
+    };
 
     let converters = {};
 
     for (const extension of this.extensions) {
+      extension.setEditor(this.editor);
+
       if (extension.type === 'node') {
         const nodeType = this.schema.nodes[extension.name];
         inputRules.push(...extension.getInputRules(nodeType));
-        plugins.push(
-          ...extension.getProseMirrorPlugins(this.editor, this.schema),
+        this.plugins.push(
+          ...extension.getProseMirrorPlugins(),
         );
-        mergeCommands(
+        this.commandManager.mergeCommandFactories(
           extension.getCommandFactories(this.editor, nodeType),
           extension.name,
         );
@@ -170,7 +135,7 @@ export class ExtensionManager {
           ...converters,
           ...extension.getConverters(this.editor, this.schema),
         };
-        const nodeView = extension.getNodeView();
+        const nodeView = extension.getNodeView(this.editor);
         if (nodeView) {
           this.nodeViews[extension.name] = nodeView;
         }
@@ -178,7 +143,7 @@ export class ExtensionManager {
       if (extension.type === 'mark') {
         const markType = this.schema.marks[extension.name];
         inputRules.push(...extension.getInputRules(markType));
-        mergeCommands(
+        this.commandManager.mergeCommandFactories(
           extension.getCommandFactories(this.editor, markType),
           extension.name,
         );
@@ -188,10 +153,10 @@ export class ExtensionManager {
         );
       }
       if (extension.type === 'extension') {
-        plugins.push(
-          ...extension.getProseMirrorPlugins(this.editor, this.schema),
+        this.plugins.push(
+          ...extension.getProseMirrorPlugins(),
         );
-        mergeCommands(
+        this.commandManager.mergeCommandFactories(
           extension.getCommandFactories(this.editor),
           extension.name,
         );
@@ -219,17 +184,16 @@ export class ExtensionManager {
         };
         keyBindings.set(
           key,
-          chainCommands(wrapperCommand, keyBinding),
+          firstCommand(wrapperCommand, keyBinding),
         );
       }
     }
 
     this.converters = converters;
 
-    plugins.push(new InputRulesPlugin(inputRules));
-    plugins.push(new KeymapPlugin(Object.fromEntries(keyBindings)));
-
-    return plugins;
+    this.plugins.push(new InputRulesPlugin(inputRules));
+    this.plugins.push(new KeymapPlugin(Object.fromEntries(keyBindings)));
+    this.plugins.push(new TrackSelecionPlugin(this.editor));
   }
 
   private setupExtensions(extensions: Set<AnyExtensionOrReq>) {
@@ -273,7 +237,11 @@ export class ExtensionManager {
           if (!initialized.has(require)) {
             const requiredExtension = allExtensions.get(require);
             if (!requiredExtension) {
-              throw new Error('Required extension not found: ' + require);
+              throw new Error(
+                `Required extension for (${
+                  'name' in extension ? extension.name : extension
+                }) not found: ${require}`,
+              );
             }
             recursiveInitializeExtension(requiredExtension);
           }
@@ -305,6 +273,16 @@ export class ExtensionManager {
       this.extensions,
     );
 
+    for (const extension of baseExtensions) {
+      if (Array.isArray(extension.conflicts)) {
+        for (const name of extension.conflicts) {
+          if (this.getExtension(name)) {
+            throw new Error(`Extension conflict: ${extension.name} vs ${name}`);
+          }
+        }
+      }
+    }
+
     const nodes: { [name: string]: NodeSpec } = {};
     for (const extension of nodeExtensions) {
       nodes[extension.name] = extension.getNodeSpec();
@@ -318,7 +296,7 @@ export class ExtensionManager {
     }
 
     const spec = {
-      topNode: this.editor.options.topNode || 'doc',
+      topNode: this.editor.config.topNode || 'doc',
       nodes,
       marks,
     };
@@ -338,5 +316,13 @@ export class ExtensionManager {
     editor.dispatchEvent(event);
 
     return new Schema(spec);
+  }
+
+  created() {
+    this.initPlugins();
+
+    for (const extension of this.extensions) {
+      extension.created();
+    }
   }
 }

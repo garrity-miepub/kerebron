@@ -1,4 +1,3 @@
----
 __Advertisement :)__
 
 - __[pica](https://nodeca.github.io/pica/demo/)__ - high quality and fast image
@@ -47,9 +46,9 @@ test.. test... test..... test?..... test!....
 
 **This is bold text**
 
-_This is italic text_
+*This is italic text*
 
-_This is italic text_
+_This is emphasis text used for underline_
 
 ~~Strikethrough~~
 
@@ -57,11 +56,16 @@ _This is italic text_
 
 > Blockquotes can also be nested...
 >
->> ...by using additional greater-than signs right next to each other...
->>
->>> ...or with spaces between arrows.
+> > ...by using additional greater-than signs right next to each other...
+> >
+> > > ...or with spaces between arrows.
 
 ## Lists
+
+Task Lists
+
+- [ ] task1
+- [x] task2
 
 Unordered
 
@@ -78,7 +82,6 @@ Ordered
 1. Lorem ipsum dolor sit amet
 2. Consectetur adipiscing elit
 3. Integer molestie lorem at massa
-
 4. You can use sequential numbers...
 5. ...or keep all the numbers as `1.`
 
@@ -162,14 +165,6 @@ with twemoji.
 
 - 19^th^
 - H~2~O
-
-### [\<ins>](https://github.com/markdown-it/markdown-it-ins)
-
-++Inserted text++
-
-### [\<mark>](https://github.com/markdown-it/markdown-it-mark)
-
-==Marked text==
 
 ### [Footnotes](https://github.com/markdown-it/markdown-it-footnote)
 

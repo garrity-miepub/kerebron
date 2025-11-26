@@ -1,7 +1,8 @@
 export interface OutputMeta<K> {
+  pos: number;
   rowPos: number;
   colPos: number;
-  item: K;
+  item?: K;
 }
 
 interface Mapping {
@@ -23,25 +24,38 @@ export interface SourceMap {
 export class SmartOutput<K> {
   private _rowPos = 0;
   private _colPos = 0;
+  private _pos = 0;
 
   private chunks: Array<string> = [];
   private metas: Array<OutputMeta<K>> = [];
 
-  log(text: string, item: K) {
+  log(text: string, item?: K) {
+    if (text.length === 0) {
+      return;
+    }
+
     this.chunks.push(text);
+
     this.metas.push({
+      pos: this._pos,
       colPos: this._colPos,
       rowPos: this._rowPos,
       item,
     });
 
     const lines = text.split('\n');
+
     if (lines.length === 1) {
       this._colPos += lines[lines.length - 1].length;
     } else {
       this._rowPos += lines.length - 1;
       this._colPos = lines[lines.length - 1].length;
     }
+    this._pos += text.length;
+  }
+
+  getMetas() {
+    return this.metas;
   }
 
   get chunkPos() {
@@ -61,6 +75,10 @@ export class SmartOutput<K> {
     return this._colPos;
   }
 
+  get pos() {
+    return this._pos;
+  }
+
   endsWith(text: string) {
     return this.chunks.join('').endsWith(text);
   }
@@ -70,12 +88,23 @@ export class SmartOutput<K> {
   }
 
   getSourceMap(
-    mapper: (item: K, rowPos: number, colPos: number) => Mapping | void,
+    mapper: (
+      rowPos: number,
+      colPos: number,
+      pos: number,
+      item?: K,
+    ) => Mapping | void,
   ): SourceMap {
     const mappingRows: Array<Array<Array<number>>> = [];
 
     let lastRow = -1;
     let lastCol = -1;
+
+    let prevSourceNo = 0;
+    let prevSourceRowPos = 0;
+    let prevSourceColPos = 0;
+
+    let prevColPos = 0;
     for (const meta of this.metas) {
       while (meta.rowPos >= mappingRows.length) {
         mappingRows.push([]);
@@ -84,14 +113,21 @@ export class SmartOutput<K> {
       if (lastRow != meta.rowPos || lastCol != meta.colPos) {
         const currentRow = mappingRows[meta.rowPos];
 
-        const mapping = mapper(meta.item, meta.rowPos, meta.colPos);
+        if (lastRow != meta.rowPos) {
+          prevColPos = 0;
+        }
+        const mapping = mapper(meta.rowPos, meta.colPos, meta.pos, meta.item);
         if (mapping) {
           currentRow.push([
-            meta.colPos,
-            mapping.sourceNo,
-            mapping.sourceRowPos,
-            mapping.sourceColPos,
+            meta.colPos - prevColPos,
+            mapping.sourceNo - prevSourceNo,
+            mapping.sourceRowPos - prevSourceRowPos,
+            mapping.sourceColPos - prevSourceColPos,
           ]);
+          prevColPos = meta.colPos;
+          prevSourceNo = mapping.sourceNo;
+          prevSourceRowPos = mapping.sourceRowPos;
+          prevSourceColPos = mapping.sourceColPos;
         }
       }
 
@@ -107,14 +143,6 @@ export class SmartOutput<K> {
           .join(',')
       )
       .join(';');
-
-    mappingRows.forEach((row, rowNo) => {
-      // console.log('g', rowNo, row);
-      row.forEach((group) => {
-        const enc = encode(group);
-        // console.log('g', rowNo, group, enc, decode(enc));
-      });
-    });
 
     return {
       version: 3,
@@ -171,11 +199,8 @@ function encodeVLQ(input: number | number[]): string {
   return result;
 }
 
-/** @type {Record<string, number>} */
-let char_to_integer = {};
-
-/** @type {Record<number, string>} */
-let integer_to_char = {};
+const char_to_integer: Record<string, number> = {};
+const integer_to_char: Record<number, string> = {};
 
 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='
   .split('')
@@ -184,10 +209,8 @@ let integer_to_char = {};
     integer_to_char[i] = char;
   });
 
-/** @param {string} string */
-export function decode(string) {
-  /** @type {number[]} */
-  let result = [];
+export function decode(string: string) {
+  let result: number[] = [];
 
   let shift = 0;
   let value = 0;
@@ -224,8 +247,7 @@ export function decode(string) {
   return result;
 }
 
-/** @param {number | number[]} value */
-export function encode(value) {
+export function encode(value: number | number[]) {
   if (typeof value === 'number') {
     return encode_integer(value);
   }
@@ -238,7 +260,6 @@ export function encode(value) {
   return result;
 }
 
-/** @param {number} num */
 function encode_integer(num: number) {
   let result = '';
 
