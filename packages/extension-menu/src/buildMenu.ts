@@ -1,31 +1,17 @@
-import { Command, EditorState, NodeSelection, Plugin } from 'prosemirror-state';
-import { MarkType, NodeType, Schema } from 'prosemirror-model';
+import { Command, EditorState, NodeSelection } from 'prosemirror-state';
+import { Attrs, MarkType, NodeType, Schema } from 'prosemirror-model';
+import { EditorView } from 'prosemirror-view';
 
-import { type CoreEditor, Extension } from '@kerebron/editor';
-import { toggleMark, wrapInList } from '@kerebron/editor/commands';
+import { type CoreEditor } from '@kerebron/editor';
 
 import {
-  blockTypeItem,
   Dropdown,
-  DropdownSubmenu,
-  MenuElement,
+  type MenuElement,
   MenuItem,
-  MenuItemSpec,
-  wrapItem,
+  type MenuItemSpec,
 } from './menu.ts';
-import { MenuPlugin } from './MenuPlugin.ts';
 import { icons } from './icons.ts';
 import { openPrompt, TextField } from './prompt.ts';
-
-export {
-  blockTypeItem,
-  Dropdown,
-  DropdownSubmenu,
-  // MenuElement,
-  MenuItem,
-  // MenuItemSpec,
-  wrapItem,
-} from './menu.ts';
 
 function canInsert(state: EditorState, nodeType: NodeType) {
   let $from = state.selection.$from;
@@ -57,25 +43,76 @@ function markActive(state: EditorState, type: MarkType) {
   else return state.doc.rangeHasMark(from, to, type);
 }
 
-function markItem(markType: MarkType, options: Partial<MenuItemSpec>) {
-  let passedOptions: Partial<MenuItemSpec> = {
-    active(state) {
-      return markActive(state, markType);
-    },
-  };
-  for (let prop in options) {
-    (passedOptions as any)[prop] = (options as any)[prop];
-  }
-  return cmdItem(toggleMark(markType), passedOptions);
-}
-
-function wrapListItem(nodeType: NodeType, options: Partial<MenuItemSpec>) {
-  return cmdItem(wrapInList(nodeType, (options as any).attrs), options);
-}
-
 const cut = <T>(arr: T[]) => arr.filter((x) => x) as NonNullable<T>[];
 
 export function buildMenu(editor: CoreEditor, schema: Schema): MenuElement[][] {
+  function markItem(markType: MarkType, options: Partial<MenuItemSpec>) {
+    let passedOptions: Partial<MenuItemSpec> = {
+      active(state) {
+        return markActive(state, markType);
+      },
+    };
+    for (let prop in options) {
+      (passedOptions as any)[prop] = (options as any)[prop];
+    }
+    return cmdItem(editor.commandFactories.toggleMark(markType), passedOptions);
+  }
+
+  function wrapItem(
+    nodeType: NodeType,
+    options: Partial<MenuItemSpec> & { attrs?: Attrs | null },
+  ) {
+    let passedOptions: MenuItemSpec = {
+      run(state, dispatch) {
+        return editor.commandFactories.wrapIn(nodeType, options.attrs)(
+          state,
+          dispatch,
+        );
+      },
+      select(state) {
+        return editor.commandFactories.wrapIn(nodeType, options.attrs)(state);
+      },
+    };
+    for (let prop in options) {
+      (passedOptions as any)[prop] = (options as any)[prop];
+    }
+    return new MenuItem(passedOptions);
+  }
+
+  function wrapListItem(nodeType: NodeType, options: Partial<MenuItemSpec>) {
+    return cmdItem(
+      editor.commandFactories.wrapInList(nodeType, (options as any).attrs),
+      options,
+    );
+  }
+
+  /// Build a menu item for changing the type of the textblock around the
+  /// selection to the given type. Provides `run`, `active`, and `select`
+  /// properties. Others must be given in `options`. `options.attrs` may
+  /// be an object to provide the attributes for the textblock node.
+  function blockTypeItem(
+    nodeType: NodeType,
+    options: Partial<MenuItemSpec> & { attrs?: Attrs | null },
+  ) {
+    let command = editor.commandFactories.setBlockType(nodeType, options.attrs);
+    let passedOptions: MenuItemSpec = {
+      run: command,
+      enable(state) {
+        return command(state);
+      },
+      active(state) {
+        let { $from, to, node } = state.selection as NodeSelection;
+        if (node) return node.hasMarkup(nodeType, options.attrs);
+        return to <= $from.end() &&
+          $from.parent.hasMarkup(nodeType, options.attrs);
+      },
+    };
+    for (let prop in options) {
+      (passedOptions as any)[prop] = (options as any)[prop];
+    }
+    return new MenuItem(passedOptions);
+  }
+
   const menu = [];
 
   if (schema.marks.strong) {
@@ -130,9 +167,9 @@ export function buildMenu(editor: CoreEditor, schema: Schema): MenuElement[][] {
         enable(state) {
           return !state.selection.empty;
         },
-        run(state, dispatch, view) {
+        run(state, dispatch) {
           if (markActive(state, markType)) {
-            toggleMark(markType)(state, dispatch);
+            editor.commandFactories.toggleMark(markType)(state, dispatch);
             return true;
           }
           openPrompt({
@@ -145,10 +182,14 @@ export function buildMenu(editor: CoreEditor, schema: Schema): MenuElement[][] {
               title: new TextField({ label: 'Title' }),
             },
             callback(attrs) {
-              toggleMark(markType, attrs)(view.state, view.dispatch);
-              view.focus();
+              editor.commandFactories.toggleMark(markType, attrs)(
+                editor.view.state,
+                editor.view.dispatch,
+              );
+              editor.view.focus();
             },
           });
+          return true;
         },
       }),
     );
@@ -189,17 +230,13 @@ export function buildMenu(editor: CoreEditor, schema: Schema): MenuElement[][] {
     }));
   }
   if (schema.nodes.heading) {
-    const makeHeadMenu = [];
-
     for (let i = 1; i <= 6; i++) {
-      makeHeadMenu.push(blockTypeItem(schema.nodes.heading, {
+      typeMenu.push(blockTypeItem(schema.nodes.heading, {
         title: 'Change to heading ' + i,
-        label: 'Level ' + i,
+        label: 'Heading ' + i,
         attrs: { level: i },
       }));
     }
-
-    typeMenu.push(new DropdownSubmenu(makeHeadMenu, { label: 'Heading' }));
   }
 
   blockMenu.push(
@@ -236,7 +273,7 @@ export function buildMenu(editor: CoreEditor, schema: Schema): MenuElement[][] {
         label: 'Image',
         // enable: (state) => editor.can().setHorizontalRule().run(),
         enable: (state) => canInsert(state, nodeType),
-        run(state, _, view) {
+        run(state, dispatch) {
           let { from, to } = state.selection, attrs = null;
           if (
             state.selection instanceof NodeSelection &&
@@ -262,14 +299,15 @@ export function buildMenu(editor: CoreEditor, schema: Schema): MenuElement[][] {
               }),
             },
             callback(attrs) {
-              view.dispatch(
-                view.state.tr.replaceSelectionWith(
+              editor.view.dispatch(
+                editor.view.state.tr.replaceSelectionWith(
                   nodeType.createAndFill(attrs)!,
                 ),
               );
-              view.focus();
+              editor.view.focus();
             },
           });
+          return true;
         },
       }),
     );
@@ -294,7 +332,7 @@ export function buildMenu(editor: CoreEditor, schema: Schema): MenuElement[][] {
 
   menu.push(
     new Dropdown(cut(typeMenu), {
-      label: 'Type...',
+      label: 'Type',
     }),
   );
 
@@ -311,23 +349,36 @@ export function buildMenu(editor: CoreEditor, schema: Schema): MenuElement[][] {
   ];
   */
 
-  menu.push(
-    new MenuItem({
-      title: 'Undo last change',
-      run: () => editor.chain().undo().run(),
-      enable: () => editor.can().undo().run(),
-      icon: icons.undo,
-    }),
-  );
+  const editorView = editor.view;
+  if (editorView instanceof EditorView) {
+    menu.push(
+      new MenuItem({
+        title: 'Undo last change',
+        run: (state, dispatch) => {
+          return editor.commandFactories.undo()(
+            editor.view.state,
+            editor.view.dispatch,
+            editorView,
+          );
+        },
+        enable: (state) => {
+          return editor.commandFactories.undo()(state);
+        },
+        icon: icons.undo,
+      }),
+    );
 
-  menu.push(
-    new MenuItem({
-      title: 'Redo last undone change',
-      run: () => editor.chain().redo().run(),
-      enable: () => editor.can().redo().run(),
-      icon: icons.redo,
-    }),
-  );
+    menu.push(
+      new MenuItem({
+        title: 'Redo last undone change',
+        run: (state, dispatch) => {
+          return editor.commandFactories.redo()(state, dispatch);
+        },
+        enable: (state) => editor.commandFactories.redo()(state),
+        icon: icons.redo,
+      }),
+    );
+  }
 
   if (schema.nodes.table) {
     const item = (label: string, cmdName: string) => {
@@ -358,34 +409,4 @@ export function buildMenu(editor: CoreEditor, schema: Schema): MenuElement[][] {
   }
 
   return [menu, blockMenu];
-}
-
-export interface MenuConfig {
-  modifyMenu?(menus: MenuElement[][]): MenuElement[][];
-  floating: boolean;
-}
-
-export class ExtensionMenu extends Extension {
-  name = 'menu';
-
-  constructor(protected config: MenuConfig = { floating: true }) {
-    super(config);
-  }
-
-  override getProseMirrorPlugins(editor: CoreEditor, schema: Schema): Plugin[] {
-    const plugins: Plugin[] = [];
-
-    let content = buildMenu(editor, schema);
-    if (this.config.modifyMenu) {
-      content = this.config.modifyMenu(content);
-    }
-    plugins.push(
-      new MenuPlugin({
-        content,
-        floating: this.config.floating,
-      }),
-    );
-
-    return plugins;
-  }
 }
