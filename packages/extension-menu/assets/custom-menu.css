@@ -117,7 +117,7 @@
   fill: currentColor;
 }
 
-/* Dropdown menus within custom menu - match toolbar dark background */
+/* Dropdown menus within custom menu - match toolbar background */
 .kb-custom-menu .kb-dropdown__menu {
   background: var(--kb-color-surface-elevated);
   border: 1px solid var(--kb-color-border-strong);
